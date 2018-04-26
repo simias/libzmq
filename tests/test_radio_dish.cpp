@@ -75,6 +75,22 @@ void msg_recv_cmp (void *s_, const char *group_, const char *body_)
     zmq_msg_close (&msg);
 }
 
+void *test_dish_radio_socket(int type, int ipv6)
+{
+    void *socket;
+
+    if (ipv6 && !is_ipv6_available ()) {
+        TEST_IGNORE_MESSAGE ("ipv6 is not available");
+    }
+
+    socket = test_context_socket (type);
+
+    TEST_ASSERT_SUCCESS_ERRNO (
+      zmq_setsockopt (socket, ZMQ_IPV6, &ipv6, sizeof (int)));
+
+    return socket;
+}
+
 void test_leave_unjoined_fails ()
 {
     void *dish = test_context_socket (ZMQ_DISH);
@@ -111,15 +127,15 @@ void test_join_twice_fails ()
     test_context_socket_close (dish);
 }
 
-void test_radio_dish_tcp_poll ()
+void test_radio_dish_tcp_poll (int ipv6)
 {
     size_t len = MAX_SOCKET_STRING;
     char my_endpoint[MAX_SOCKET_STRING];
 
     void *radio = test_context_socket (ZMQ_RADIO);
-    bind_loopback_ipv4 (radio, my_endpoint, len);
+    bind_loopback (radio, ipv6, my_endpoint, len);
 
-    void *dish = test_context_socket (ZMQ_DISH);
+    void *dish = test_dish_radio_socket (ZMQ_DISH, ipv6);
 
     // Joining
     TEST_ASSERT_SUCCESS_ERRNO (zmq_join (dish, "Movies"));
@@ -176,20 +192,41 @@ void test_radio_dish_tcp_poll ()
     test_context_socket_close (radio);
 }
 
-void test_dish_connect_fails ()
+void test_radio_dish_tcp_poll_ipv4 ()
 {
-    void *dish = test_context_socket (ZMQ_DISH);
+    test_radio_dish_tcp_poll (false);
+}
+
+void test_radio_dish_tcp_poll_ipv6 ()
+{
+    test_radio_dish_tcp_poll (true);
+}
+
+void test_dish_connect_fails (int ipv6)
+{
+    void *dish = test_dish_radio_socket (ZMQ_DISH, ipv6);
+    const char *url = ipv6 ? "udp://[::1]:5556" : "udp://127.0.0.1:5556";
 
     //  Connecting dish should fail
     TEST_ASSERT_FAILURE_ERRNO (ENOCOMPATPROTO,
-                               zmq_connect (dish, "udp://127.0.0.1:5556"));
+                               zmq_connect (dish, url));
 
     test_context_socket_close (dish);
 }
 
-void test_radio_bind_fails ()
+void test_dish_connect_fails_ipv4 ()
 {
-    void *radio = test_context_socket (ZMQ_RADIO);
+    test_dish_connect_fails (false);
+}
+
+void test_dish_connect_fails_ipv6 ()
+{
+    test_dish_connect_fails (true);
+}
+
+void test_radio_bind_fails (int ipv6)
+{
+    void *radio = test_dish_radio_socket (ZMQ_RADIO, ipv6);
 
     //  Connecting dish should fail
     //  Bind radio should fail
@@ -197,6 +234,16 @@ void test_radio_bind_fails ()
                                zmq_bind (radio, "udp://*:5556"));
 
     test_context_socket_close (radio);
+}
+
+void test_radio_bind_fails_ipv4 ()
+{
+    test_radio_bind_fails (false);
+}
+
+void test_radio_bind_fails_ipv6 ()
+{
+    test_radio_bind_fails (true);
 }
 
 void test_radio_dish_udp ()
@@ -226,9 +273,12 @@ int main (void)
     RUN_TEST (test_leave_unjoined_fails);
     RUN_TEST (test_join_too_long_fails);
     RUN_TEST (test_join_twice_fails);
-    RUN_TEST (test_radio_bind_fails);
-    RUN_TEST (test_dish_connect_fails);
-    RUN_TEST (test_radio_dish_tcp_poll);
+    RUN_TEST (test_radio_bind_fails_ipv4);
+    RUN_TEST (test_radio_bind_fails_ipv6);
+    RUN_TEST (test_dish_connect_fails_ipv4);
+    RUN_TEST (test_dish_connect_fails_ipv6);
+    RUN_TEST (test_radio_dish_tcp_poll_ipv4);
+    RUN_TEST (test_radio_dish_tcp_poll_ipv6);
     RUN_TEST (test_radio_dish_udp);
 
     return UNITY_END ();
