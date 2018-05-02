@@ -76,7 +76,7 @@ class ip_resolver_t
 
     int resolve (ip_addr_t *ip_addr_, const char *name_);
 
-  private:
+  protected:
     ip_resolver_options_t options;
 
     int resolve_nic_name (ip_addr_t *ip_addr_, const char *nic_);
@@ -86,6 +86,13 @@ class ip_resolver_t
     int get_interface_name (unsigned long index, char **dest) const;
     int wchar_to_utf8 (const WCHAR *src, char **dest) const;
 #endif
+
+    virtual int do_getaddrinfo (const char *node_,
+                                const char *service_,
+                                const struct addrinfo *hints_,
+                                struct addrinfo **res_);
+
+    virtual void do_freeaddrinfo (struct addrinfo *res_);
 };
 }
 

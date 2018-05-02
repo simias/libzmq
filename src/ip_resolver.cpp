@@ -274,14 +274,14 @@ int zmq::ip_resolver_t::resolve_getaddrinfo (ip_addr_t *ip_addr_,
 
     //  Resolve the literal address. Some of the error info is lost in case
     //  of error, however, there's no way to report EAI errors via errno.
-    int rc = getaddrinfo (addr_, NULL, &req, &res);
+    int rc = do_getaddrinfo (addr_, NULL, &req, &res);
 
 #if defined AI_V4MAPPED
     // Some OS do have AI_V4MAPPED defined but it is not supported in getaddrinfo()
     // returning EAI_BADFLAGS. Detect this and retry
     if (rc == EAI_BADFLAGS && (req.ai_flags & AI_V4MAPPED)) {
         req.ai_flags &= ~AI_V4MAPPED;
-        rc = getaddrinfo (addr_, NULL, &req, &res);
+        rc = do_getaddrinfo (addr_, NULL, &req, &res);
     }
 #endif
 
@@ -290,7 +290,7 @@ int zmq::ip_resolver_t::resolve_getaddrinfo (ip_addr_t *ip_addr_,
     //  with ZMQ_IPv6 socket option.
     if ((req.ai_family == AF_INET6) && (rc == WSAHOST_NOT_FOUND)) {
         req.ai_family = AF_INET;
-        rc = getaddrinfo (addr_, NULL, &req, &res);
+        rc = do_getaddrinfo (addr_, NULL, &req, &res);
     }
 #endif
 
@@ -316,7 +316,7 @@ int zmq::ip_resolver_t::resolve_getaddrinfo (ip_addr_t *ip_addr_,
     memcpy (ip_addr_, res->ai_addr, res->ai_addrlen);
 
     //  Cleanup getaddrinfo after copying the possibly referenced result.
-    freeaddrinfo (res);
+    do_freeaddrinfo (res);
 
     return 0;
 }
@@ -638,3 +638,16 @@ int zmq::ip_resolver_t::resolve_nic_name (ip_addr_t *ip_addr_, const char *nic_)
 }
 
 #endif
+
+int zmq::ip_resolver_t::do_getaddrinfo (const char *node_,
+                                        const char *service_,
+                                        const struct addrinfo *hints_,
+                                        struct addrinfo **res_)
+{
+    return getaddrinfo (node_, service_, hints_, res_);
+}
+
+void zmq::ip_resolver_t::do_freeaddrinfo (struct addrinfo *res_)
+{
+    freeaddrinfo (res_);
+}

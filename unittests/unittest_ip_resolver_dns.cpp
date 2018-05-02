@@ -22,7 +22,15 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include <ip_resolver.hpp>
 
-extern "C" {
+class test_ip_resolver_t : public zmq::ip_resolver_t
+{
+public:
+    test_ip_resolver_t (zmq::ip_resolver_options_t opts_) :
+        ip_resolver_t (opts_)
+    {
+    }
+
+protected:
     struct dns_lut_t
     {
         const char *hostname;
@@ -30,17 +38,15 @@ extern "C" {
         const char *ipv6;
     };
 
-    static const struct dns_lut_t dns_lut[] = {
-        { "ip.zeromq.org",       "10.100.0.1", "fdf5:d058:d656::1" },
-        { "ipv4only.zeromq.org", "10.100.0.2", "::ffff:10.100.0.2" },
-        { "ipv6only.zeromq.org", NULL,         "fdf5:d058:d656::2" },
-    };
-
-    //  Dummy getaddrinfo implementation to avoid making DNS queries in tests
-    int getaddrinfo (const char *node_, const char *service_,
-                     const struct addrinfo *hints_,
-                     struct addrinfo **res_)
+    virtual int do_getaddrinfo (const char *node_, const char *service_,
+                                const struct addrinfo *hints_,
+                                struct addrinfo **res_)
     {
+        static const struct dns_lut_t dns_lut[] = {
+            { "ip.zeromq.org",       "10.100.0.1", "fdf5:d058:d656::1" },
+            { "ipv4only.zeromq.org", "10.100.0.2", "::ffff:10.100.0.2" },
+            { "ipv6only.zeromq.org", NULL,         "fdf5:d058:d656::2" },
+        };
         struct addrinfo ai;
 
         assert (service_ == NULL);
@@ -119,11 +125,7 @@ extern "C" {
         return 0;
     }
 
-#ifndef __THROW
-# define __THROW
-#endif
-
-    void freeaddrinfo (struct addrinfo *res_) __THROW
+    virtual void do_freeaddrinfo(struct addrinfo *res_)
     {
         if (res_->ai_addr) {
             free (res_->ai_addr);
@@ -132,7 +134,8 @@ extern "C" {
 
         free (res_);
     }
-}
+
+};
 
 //  Generate an invalid but well-defined 'ip_addr_t'. Avoids testing
 //  uninitialized values if the code is buggy.
@@ -187,7 +190,7 @@ void test_dns_ipv4_simple ()
         .expect_port (false)
         .ipv6 (false);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     assert (test_inet_pton (AF_INET, "10.100.0.1", &expected_addr1) == 1);
     assert (test_inet_pton (AF_INET, "10.100.0.2", &expected_addr2) == 1);
@@ -231,7 +234,7 @@ void test_dns_ipv4_port ()
         .expect_port (true)
         .ipv6 (false);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     assert (test_inet_pton (AF_INET, "10.100.0.1", &expected_addr1) == 1);
     assert (test_inet_pton (AF_INET, "10.100.0.2", &expected_addr2) == 1);
@@ -270,7 +273,7 @@ void test_dns_ipv4_deny ()
         .expect_port (false)
         .ipv6 (false);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     //  DNS resolution shouldn't work when disallowed
     TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "ip.zeromq.org"));
@@ -289,7 +292,7 @@ void test_dns_ipv6_deny ()
         .expect_port (false)
         .ipv6 (true);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     //  DNS resolution shouldn't work when disallowed
     TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "ip.zeromq.org"));
@@ -309,7 +312,7 @@ void test_dns_ipv6_simple ()
         .expect_port (false)
         .ipv6 (true);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
                             &expected_addr1) == 1);
@@ -344,7 +347,7 @@ void test_dns_ipv6_scope ()
         .expect_port (false)
         .ipv6 (true);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
                             &expected_addr1) == 1);
@@ -386,7 +389,7 @@ void test_dns_ipv6_port ()
         .expect_port (true)
         .ipv6 (true);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
                             &expected_addr1) == 1);
@@ -429,7 +432,7 @@ void test_dns_ipv4_in_ipv6_simple ()
         .expect_port (false)
         .ipv6 (true);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     assert (test_inet_pton (AF_INET6, "::ffff:10.100.0.2",
                             &expected_addr_v4) == 1);
@@ -455,7 +458,7 @@ void test_dns_ipv4_in_ipv6_port ()
         .expect_port (true)
         .ipv6 (true);
 
-    zmq::ip_resolver_t resolver (resolver_opts);
+    test_ip_resolver_t resolver (resolver_opts);
 
     assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
                             &expected_addr1) == 1);
