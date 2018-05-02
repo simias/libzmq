@@ -110,8 +110,63 @@ protected:
     }
 };
 
-//  Generate an invalid but well-defined 'ip_addr_t'. Avoids testing
-//  uninitialized values if the code is buggy.
+//  Attempt a resolution and test the results. If 'expected_addr_' is NULL
+//  assume that the resolution is meant to fail.
+static void test_resolve(zmq::ip_resolver_options_t opts_,
+                         const char *name_,
+                         const char *expected_addr_,
+                         uint16_t expected_port_ = 0,
+                         uint16_t expected_zone_ = 0)
+{
+    zmq::ip_addr_t addr;
+    const int family = opts_.ipv6() ? AF_INET6 : AF_INET;
+
+    if (family == AF_INET6 && !is_ipv6_available ()) {
+        TEST_IGNORE_MESSAGE ("ipv6 is not available");
+    }
+
+    //  Generate an invalid but well-defined 'ip_addr_t'. Avoids testing
+    //  uninitialized values if the code is buggy.
+    memset (&addr, 0xba, sizeof (addr));
+
+    test_ip_resolver_t resolver (opts_);
+
+    int rc = resolver.resolve (&addr, name_);
+
+    if (expected_addr_ == NULL) {
+        TEST_ASSERT_EQUAL (-1, rc);
+        return;
+    } else {
+        TEST_ASSERT_EQUAL (0, rc);
+    }
+
+    TEST_ASSERT_EQUAL (family, addr.generic.sa_family);
+
+    if (family == AF_INET6) {
+        struct in6_addr expected_addr;
+        const sockaddr_in6 *ip6_addr = &addr.ipv6;
+
+        assert (test_inet_pton (AF_INET6, expected_addr_, &expected_addr) == 1);
+
+        int neq = memcmp (&ip6_addr->sin6_addr,
+                          &expected_addr,
+                          sizeof (expected_addr_));
+
+        TEST_ASSERT_EQUAL (0, neq);
+        TEST_ASSERT_EQUAL (htons (expected_port_), ip6_addr->sin6_port);
+        TEST_ASSERT_EQUAL (expected_zone_, ip6_addr->sin6_scope_id);
+    } else {
+        struct in_addr expected_addr;
+        const sockaddr_in *ip4_addr = &addr.ipv4;
+
+        assert (test_inet_pton (AF_INET, expected_addr_, &expected_addr) == 1);
+
+        TEST_ASSERT_EQUAL (AF_INET, addr.generic.sa_family);
+        TEST_ASSERT_EQUAL (expected_addr.s_addr, ip4_addr->sin_addr.s_addr);
+        TEST_ASSERT_EQUAL (htons (expected_port_), ip4_addr->sin_port);
+    }
+}
+
 static zmq::ip_addr_t test_bad_addr (void)
 {
     zmq::ip_addr_t addr;
@@ -150,7 +205,19 @@ static void validate_ipv4_addr (const zmq::ip_addr_t &addr_,
     TEST_ASSERT_EQUAL (htons (expected_port_), ip4_addr->sin_port);
 }
 
-void test_bind_any (int ipv6_)
+// Helper macro to define the v4/v6 function pairs
+#define MAKE_TEST_V4V6(_test)                   \
+    static void _test ## _ipv4 ()               \
+    {                                           \
+        _test (false);                          \
+    }                                           \
+                                                \
+    static void _test ## _ipv6 ()               \
+    {                                           \
+        _test (true);                           \
+    }
+
+static void test_bind_any (int ipv6_)
 {
     zmq::ip_resolver_options_t resolver_opts;
     zmq::ip_addr_t addr;
@@ -187,668 +254,659 @@ void test_bind_any (int ipv6_)
         validate_ipv4_addr (addr, anyaddr, 0);
     }
 }
+MAKE_TEST_V4V6 (test_bind_any)
 
-void test_bind_any_ipv4 () {
-    test_bind_any (false);
-}
-
-void test_bind_any_ipv6 () {
-    test_bind_any (true);
-}
-
-void test_nobind_any (int ipv6_)
+static void test_nobind_any (int ipv6_)
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr = test_bad_addr ();
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
         .expect_port (true)
         .ipv6 (ipv6_);
 
-    test_ip_resolver_t resolver (resolver_opts);
+    //  Wildcard should be rejected if we're not looking for a
+    //  bindable address
+    test_resolve (resolver_opts, "*:*", NULL);
+}
+MAKE_TEST_V4V6 (test_nobind_any)
+
+static void test_nobind_any_port (int ipv6_)
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .expect_port (true)
+        .ipv6 (ipv6_);
 
     //  Wildcard should be rejected if we're not looking for a
     //  bindable address
-    TEST_ASSERT_EQUAL(-1, resolver.resolve(&addr, "*:*"));
-    TEST_ASSERT_EQUAL(-1, resolver.resolve(&addr, "*:1234"));
+    test_resolve (resolver_opts, "*:1234", NULL);
+}
+MAKE_TEST_V4V6 (test_nobind_any_port)
+
+static void test_nobind_addr_anyport (int ipv6_)
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .expect_port (true)
+        .ipv6 (ipv6_);
 
     // This however works. Should it ? For the time being I'm going to
     // keep it that way for backcompat but I can't imagine why you'd
     // want a wildcard port if you're not binding.
-    TEST_ASSERT_EQUAL(0, resolver.resolve(&addr, "127.0.0.1:*"));
+    const char *expected = ipv6_ ? "::ffff:127.0.0.1" : "127.0.0.1";
+    test_resolve (resolver_opts, "127.0.0.1:1234", expected, 1234);
 }
+MAKE_TEST_V4V6 (test_nobind_addr_anyport)
 
-void test_nobind_any_ipv4 () {
-    test_nobind_any (false);
-}
-
-void test_nobind_any_ipv6 () {
-    test_nobind_any (true);
-}
-
-void test_parse_ipv4_simple () {
+static void test_parse_ipv4_simple ()
+{
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in_addr expected_addr;
 
-    resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (false)
-        .ipv6 (false);
+    test_resolve (resolver_opts, "1.2.128.129", "1.2.128.129");
+}
 
-    test_ip_resolver_t resolver (resolver_opts);
+static void test_parse_ipv4_zero ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
-    assert (test_inet_pton (AF_INET, "1.2.128.129", &expected_addr) == 1);
+    test_resolve (resolver_opts, "0.0.0.0", "0.0.0.0");
+}
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "1.2.128.129"));
-    validate_ipv4_addr (addr, expected_addr);
+static void test_parse_ipv4_max ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    test_resolve (resolver_opts, "255.255.255.255", "255.255.255.255");
+}
+
+static void test_parse_ipv4_brackets ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
     //  Not particularly useful, but valid
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[1.2.128.129]"));
-    validate_ipv4_addr (addr, expected_addr);
+    test_resolve (resolver_opts, "[1.2.128.129]", "1.2.128.129");
+}
 
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128].129"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128.]129"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128.129"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "1.2.128.129]"));
+static void test_parse_ipv4_brackets_missingl ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    test_resolve (resolver_opts, "1.2.128.129]", NULL);
+}
+
+static void test_parse_ipv4_brackets_missingr ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    test_resolve (resolver_opts, "[1.2.128.129", NULL);
+}
+
+static void test_parse_ipv4_brackets_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    test_resolve (resolver_opts, "[1.2.128].129", NULL);
+}
+
+static void test_parse_ipv4_reject_port ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
     //  No port expected, should be rejected
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "1.2.128.129:123"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "1.2.128.129:*"));
-
-    //  IPv6 should be rejected
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "::1"));
+    test_resolve (resolver_opts, "1.2.128.129:123", NULL);
 }
 
-void test_parse_ipv4_port () {
+static void test_parse_ipv4_reject_any ()
+{
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in_addr expected_addr;
 
-    resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (true)
-        .ipv6 (false);
-
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET, "1.2.128.129", &expected_addr) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "1.2.128.129:123"));
-    validate_ipv4_addr (addr, expected_addr, 123);
-
-    //  The code doesn't validate that the port doesn't contain garbage, should
-    //  it?
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "1.2.128.129:123bad"));
-    validate_ipv4_addr (addr, expected_addr, 123);
-
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "1.2.128.129"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "1.2.128.129:bad"));
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[1.2.128.129]:123"));
-    validate_ipv4_addr (addr, expected_addr, 123);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "1.2.128.129:*"));
-    validate_ipv4_addr (addr, expected_addr, 0);
-
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128.129:]123"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128.]129"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128].129"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128]129"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128.129:123]"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[1.2.128.129:*]"));
-
-    //  IPv6 should be rejected
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[::1]:1234"));
+    //  No port expected, should be rejected
+    test_resolve (resolver_opts, "1.2.128.129:*", NULL);
 }
 
-void test_parse_ipv6_simple () {
+static void test_parse_ipv4_reject_ipv6 ()
+{
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr;
 
-    resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (false)
-        .ipv6 (true);
-
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "::1", &expected_addr) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "::1"));
-    validate_ipv6_addr (addr, expected_addr);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[::1]"));
-    validate_ipv6_addr (addr, expected_addr);
-
-    assert (test_inet_pton (AF_INET6, "abcd:1234::1:0:234", &expected_addr) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "abcd:1234::1:0:234"));
-    validate_ipv6_addr (addr, expected_addr);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[abcd:1234::1:0:234]"));
-    validate_ipv6_addr (addr, expected_addr);
-
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[abcd:1234::1]:0:234"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[abcd:1234::1:0]:234"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[abcd:1234::1:0:]234"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[abcd:1234::1:0:234"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "abcd:1234::1:0:234]"));
+    //  No port expected, should be rejected
+    test_resolve (resolver_opts, "::1", NULL);
 }
 
-void test_parse_ipv6_port () {
+static void test_parse_ipv4_port ()
+{
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "1.2.128.129:123", "1.2.128.129", 123);
+}
+
+static void test_parse_ipv4_port0 ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    //  Port 0 is accepted and is equivalent to *
+    test_resolve (resolver_opts, "1.2.128.129:0", "1.2.128.129", 0);
+}
+
+static void test_parse_ipv4_port_garbage ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    //  The code doesn't validate that the port doesn't contain garbage
+    test_resolve (resolver_opts, "1.2.3.4:567bad", "1.2.3.4", 567);
+}
+
+static void test_parse_ipv4_port_missing ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "1.2.3.4", NULL);
+}
+
+static void test_parse_ipv4_port_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "1.2.3.4:bad", NULL);
+}
+
+static void test_parse_ipv4_port_brackets ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "[192.168.1.1]:5555", "192.168.1.1", 5555);
+}
+
+static void test_parse_ipv4_port_brackets_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "[192.168.1.1:]5555", NULL);
+}
+
+static void test_parse_ipv4_port_brackets_bad2 ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "[192.168.1.1:5555]", NULL);
+}
+
+static void test_parse_ipv4_wild_brackets_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "[192.168.1.1:*]", NULL);
+}
+
+static void test_parse_ipv4_port_ipv6_reject ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true);
+
+    test_resolve (resolver_opts, "[::1]:1234", NULL);
+}
+
+static void test_parse_ipv6_simple ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "::1", "::1");
+}
+
+static void test_parse_ipv6_simple2 ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "abcd:1234::1:0:234", "abcd:1234::1:0:234");
+}
+
+static void test_parse_ipv6_zero ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "::", "::");
+}
+
+static void test_parse_ipv6_max ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
+                  "ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff");
+}
+
+static void test_parse_ipv6_brackets ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "[::1]", "::1");
+}
+
+static void test_parse_ipv6_brackets_missingl ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "::1]", NULL);
+}
+
+static void test_parse_ipv6_brackets_missingr ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "[::1", NULL);
+}
+
+static void test_parse_ipv6_brackets_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.ipv6 (true);
+
+    test_resolve (resolver_opts, "[abcd:1234::1:]0:234", NULL);
+}
+
+static void test_parse_ipv6_port ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (true)
-        .ipv6 (true);
+        .ipv6 (true)
+        .expect_port (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
+    test_resolve (resolver_opts, "[1234::1]:80", "1234::1", 80);
+}
 
-    assert (test_inet_pton (AF_INET6, "abcd:1234::1:0:234",
-                            &expected_addr) == 1);
+static void test_parse_ipv6_port_any ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[abcd:1234::1:0:234]:*"));
-    validate_ipv6_addr (addr, expected_addr, 0);
+    resolver_opts
+        .ipv6 (true)
+        .expect_port (true);
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[abcd:1234::1:0:234]:5432"));
-    validate_ipv6_addr (addr, expected_addr, 5432);
+    test_resolve (resolver_opts, "[1234::1]:*", "1234::1", 0);
+}
 
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[::1]:123:456"));
+static void test_parse_ipv6_port_nobrackets ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .ipv6 (true)
+        .expect_port (true);
 
     //  Should this be allowed? Seems error-prone but so far ZMQ accepts it.
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "abcd:1234::1:0:234:123"));
-    validate_ipv6_addr (addr, expected_addr, 123);
+    test_resolve (resolver_opts, "abcd:1234::1:0:234:123", "abcd:1234::1:0:234",
+                  123);
 }
 
-//  Parsing IPv4 should also work if an IPv6 is requested, it
-//  returns an IPv6 with the IPv4 address embedded
-void test_parse_ipv4_in_ipv6_simple ()
+static void test_parse_ipv4_in_ipv6 ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (false)
         .ipv6 (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "::ffff:1.2.128.129", &expected_addr) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "1.2.128.129"));
-    validate_ipv6_addr (addr, expected_addr);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "::ffff:1.2.128.129"));
-    validate_ipv6_addr (addr, expected_addr);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[1.2.128.129]"));
-    validate_ipv6_addr (addr, expected_addr);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[::ffff:1.2.128.129]"));
-    validate_ipv6_addr (addr, expected_addr);
+    //  Parsing IPv4 should also work if an IPv6 is requested, it
+    //  returns an IPv6 with the IPv4 address embedded
+    test_resolve (resolver_opts, "11.22.33.44", "::ffff:11.22.33.44");
 }
 
-void test_parse_ipv4_in_ipv6_port ()
+static void test_parse_ipv4_in_ipv6_port ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
+        .ipv6 (true)
+        .expect_port (true);
+
+    test_resolve (resolver_opts, "11.22.33.44:55", "::ffff:11.22.33.44", 55);
+}
+
+static void test_parse_ipv6_scope_int ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .ipv6 (true);
+
+    test_resolve (resolver_opts, "3000:4:5::1:234%2", "3000:4:5::1:234", 0, 2);
+}
+
+static void test_parse_ipv6_scope_zero ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .ipv6 (true);
+
+    test_resolve (resolver_opts, "3000:4:5::1:234%0", NULL);
+}
+
+static void test_parse_ipv6_scope_int_port ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
         .expect_port (true)
         .ipv6 (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "::ffff:1.2.128.129", &expected_addr) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "1.2.128.129:1234"));
-    validate_ipv6_addr (addr, expected_addr, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[1.2.128.129]:1234"));
-    validate_ipv6_addr (addr, expected_addr, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "1.2.128.129:*"));
-    validate_ipv6_addr (addr, expected_addr, 0);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[::ffff:1.2.128.129]:1234"));
-    validate_ipv6_addr (addr, expected_addr, 1234);
+    test_resolve (resolver_opts, "3000:4:5::1:234%2:1111", "3000:4:5::1:234", 1111, 2);
 }
 
-void test_parse_ipv6_scope_simple ()
+static void test_parse_ipv6_scope_if ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (false)
         .ipv6 (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "3000:4:5::1:234", &expected_addr) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "3000:4:5::1:234%1"));
-    validate_ipv6_addr (addr, expected_addr, 0, 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "3000:4:5::1:234%2"));
-    validate_ipv6_addr (addr, expected_addr, 0, 2);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "3000:4:5::1:234%0"));
-
-#ifdef HAVE_IFNAMETOINDEX
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "3000:4:5::1:234%lo0"));
-    validate_ipv6_addr (addr, expected_addr, 0, 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "3000:4:5::1:234%eth0"));
-    validate_ipv6_addr (addr, expected_addr, 0, 2);
-
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "3000:4:5::1:234%bad0"));
-#endif // HAVE_IFNAMETOINDEX
+    test_resolve (resolver_opts, "3000:4:5::1:234%eth1", "3000:4:5::1:234", 0, 3);
 }
 
-void test_parse_ipv6_scope_port ()
+static void test_parse_ipv6_scope_if_port ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
         .expect_port (true)
         .ipv6 (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "3000:4:5::1:234", &expected_addr) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "3000:4:5::1:234%1:123"));
-    validate_ipv6_addr (addr, expected_addr, 123, 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[3000:4:5::1:234%2]:123"));
-    validate_ipv6_addr (addr, expected_addr, 123, 2);
-
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[3000:4:5::1:234]%2:123"));
-
-#ifdef HAVE_IFNAMETOINDEX
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "3000:4:5::1:234%lo0:456"));
-    validate_ipv6_addr (addr, expected_addr, 456, 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[3000:4:5::1:234%eth0]:22"));
-    validate_ipv6_addr (addr, expected_addr, 22, 2);
-
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "[3000:4:5::1:234]%bad0:44"));
-#endif // HAVE_IFNAMETOINDEX
+    test_resolve (resolver_opts, "3000:4:5::1:234%eth0:8080", "3000:4:5::1:234", 8080, 2);
 }
 
-void test_dns_ipv4_simple ()
+static void test_parse_ipv6_scope_if_port_brackets ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in_addr expected_addr1, expected_addr2;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (true)
-        .allow_nic_name (false)
-        .expect_port (false)
-        .ipv6 (false);
+        .expect_port (true)
+        .ipv6 (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
+    test_resolve (resolver_opts, "[3000:4:5::1:234%eth0]:8080", "3000:4:5::1:234", 8080, 2);
+}
 
-    assert (test_inet_pton (AF_INET, "10.100.0.1", &expected_addr1) == 1);
-    assert (test_inet_pton (AF_INET, "10.100.0.2", &expected_addr2) == 1);
+static void test_parse_ipv6_scope_if_port_brackets_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org"));
-    validate_ipv4_addr (addr, expected_addr1);
+    resolver_opts
+        .expect_port (true)
+        .ipv6 (true);
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ipv4only.zeromq.org"));
-    validate_ipv4_addr (addr, expected_addr2);
+    test_resolve (resolver_opts, "[3000:4:5::1:234]%eth0:8080", NULL);
+}
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org]"));
-    validate_ipv4_addr (addr, expected_addr1);
+static void test_parse_ipv6_scope_badif ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "ipv6only.zeromq.org"));
+    resolver_opts
+        .ipv6 (true);
 
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "invalid.zeromq.org"));
+    test_resolve (resolver_opts, "3000:4:5::1:234%bad0", NULL);
+}
+
+static void test_dns_ipv4_simple ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "ip.zeromq.org", "10.100.0.1");
+}
+
+static void test_dns_ipv4_only ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "ipv4only.zeromq.org", "10.100.0.2");
+}
+
+static void test_dns_ipv4_invalid ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "invalid.zeromq.org", NULL);
+}
+
+static void test_dns_ipv4_ipv6 ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "ipv6only.zeromq.org", NULL);
+}
+
+static void test_dns_ipv4_numeric ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
 
     //  Numeric IPs should still work
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "10.100.0.1"));
-    validate_ipv4_addr (addr, expected_addr1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "10.100.0.2"));
-    validate_ipv4_addr (addr, expected_addr2);
+    test_resolve (resolver_opts, "5.4.3.2", "5.4.3.2");
 }
 
-void test_dns_ipv4_port ()
+static void test_dns_ipv4_port ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in_addr expected_addr1, expected_addr2;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (true)
-        .allow_nic_name (false)
         .expect_port (true)
-        .ipv6 (false);
+        .allow_dns (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
+    test_resolve (resolver_opts, "ip.zeromq.org:1234", "10.100.0.1", 1234);
+}
 
-    assert (test_inet_pton (AF_INET, "10.100.0.1", &expected_addr1) == 1);
-    assert (test_inet_pton (AF_INET, "10.100.0.2", &expected_addr2) == 1);
+static void test_dns_ipv6_simple ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org:1234"));
-    validate_ipv4_addr (addr, expected_addr1, 1234);
+    resolver_opts
+        .ipv6 (true)
+        .allow_dns (true);
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ipv4only.zeromq.org:1234"));
-    validate_ipv4_addr (addr, expected_addr2, 1234);
+    test_resolve (resolver_opts, "ip.zeromq.org", "fdf5:d058:d656::1");
+}
 
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org]:1234"));
-    validate_ipv4_addr (addr, expected_addr1, 1234);
+static void test_dns_ipv6_only ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .ipv6 (true)
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "ipv6only.zeromq.org", "fdf5:d058:d656::2");
+}
+
+static void test_dns_ipv6_invalid ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .ipv6 (true)
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "invalid.zeromq.org", NULL);
+}
+
+static void test_dns_ipv6_ipv4 ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .ipv6 (true)
+        .allow_dns (true);
+
+    //  If a host doesn't have an IPv6 then it should resolve as an embedded v4
+    //  address in an IPv6
+    test_resolve (resolver_opts, "ipv4only.zeromq.org", "::ffff:10.100.0.2");
+}
+
+static void test_dns_ipv6_numeric ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .ipv6 (true)
+        .allow_dns (true);
 
     //  Numeric IPs should still work
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "10.100.0.1:123"));
-    validate_ipv4_addr (addr, expected_addr1, 123);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "10.100.0.2:456"));
-    validate_ipv4_addr (addr, expected_addr2, 456);
+    test_resolve (resolver_opts, "fdf5:d058:d656::1", "fdf5:d058:d656::1");
 }
 
-void test_dns_ipv4_deny ()
+static void test_dns_ipv6_port ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
 
     resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (false)
-        .ipv6 (false);
+        .ipv6 (true)
+        .expect_port (true)
+        .allow_dns (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
+    test_resolve (resolver_opts, "ip.zeromq.org:1234", "fdf5:d058:d656::1",
+                  1234);
+}
+
+void test_dns_brackets ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "[ip.zeromq.org]", "10.100.0.1");
+}
+
+void test_dns_brackets_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "[ip.zeromq].org", NULL);
+}
+
+void test_dns_brackets_port ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "[ip.zeromq.org]:22", "10.100.0.1", 22);
+}
+
+void test_dns_brackets_port_bad ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (true);
+
+    test_resolve (resolver_opts, "[ip.zeromq.org:22]", NULL);
+}
+
+void test_dns_deny (int ipv6_)
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts
+        .allow_dns (false)
+        .ipv6 (ipv6_);
 
     //  DNS resolution shouldn't work when disallowed
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "ip.zeromq.org"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "ipv4only.zeromq.org"));
+    test_resolve (resolver_opts, "ip.zeromq.org", NULL);
 }
-
-void test_dns_ipv6_deny ()
-{
-    zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-
-    resolver_opts
-        .bindable (false)
-        .allow_dns (false)
-        .allow_nic_name (false)
-        .expect_port (false)
-        .ipv6 (true);
-
-    test_ip_resolver_t resolver (resolver_opts);
-
-    //  DNS resolution shouldn't work when disallowed
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "ip.zeromq.org"));
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "ipv6only.zeromq.org"));
-}
-
-void test_dns_ipv6_simple ()
-{
-    zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr1, expected_addr2, expected_addr_v4;
-
-    resolver_opts
-        .bindable (false)
-        .allow_dns (true)
-        .allow_nic_name (false)
-        .expect_port (false)
-        .ipv6 (true);
-
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
-                            &expected_addr1) == 1);
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::2",
-                            &expected_addr2) == 1);
-    assert (test_inet_pton (AF_INET6, "::ffff:10.100.0.2",
-                            &expected_addr_v4) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org"));
-    validate_ipv6_addr (addr, expected_addr1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ipv6only.zeromq.org"));
-    validate_ipv6_addr (addr, expected_addr2);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org]"));
-    validate_ipv6_addr (addr, expected_addr1);
-}
+MAKE_TEST_V4V6(test_dns_deny)
 
 void test_dns_ipv6_scope ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr1, expected_addr2, expected_addr_v4;
 
     resolver_opts
-        .bindable (false)
         .allow_dns (true)
-        .allow_nic_name (false)
-        .expect_port (false)
         .ipv6 (true);
-
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
-                            &expected_addr1) == 1);
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::2",
-                            &expected_addr2) == 1);
-    assert (test_inet_pton (AF_INET6, "::ffff:10.100.0.2",
-                            &expected_addr_v4) == 1);
 
     //  Not sure if that's very useful but you could technically add a scope
     //  identifier to a hostname
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org%4"));
-    validate_ipv6_addr (addr, expected_addr1, 0, 4);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org%5]"));
-    validate_ipv6_addr (addr, expected_addr1, 0, 5);
-
-    //  Numeric IPs should still work
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "fdf5:d058:d656::1"));
-    validate_ipv6_addr (addr, expected_addr1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "fdf5:d058:d656::2"));
-    validate_ipv6_addr (addr, expected_addr2);
+    test_resolve (resolver_opts, "ip.zeromq.org%lo0", "fdf5:d058:d656::1", 0,
+                  1);
 }
 
-void test_dns_ipv6_port ()
+void test_dns_ipv6_scope_port ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr1, expected_addr2, expected_addr_v4;
 
     resolver_opts
-        .bindable (false)
         .allow_dns (true)
-        .allow_nic_name (false)
         .expect_port (true)
         .ipv6 (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
-                            &expected_addr1) == 1);
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::2",
-                            &expected_addr2) == 1);
-    assert (test_inet_pton (AF_INET6, "::ffff:10.100.0.2",
-                            &expected_addr_v4) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org:1234"));
-    validate_ipv6_addr (addr, expected_addr1, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ipv6only.zeromq.org:1234"));
-    validate_ipv6_addr (addr, expected_addr2, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org]:1234"));
-    validate_ipv6_addr (addr, expected_addr1, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org%8:1234"));
-    validate_ipv6_addr (addr, expected_addr1, 1234, 8);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org%9]:5678"));
-    validate_ipv6_addr (addr, expected_addr1, 5678, 9);
+    //  Not sure if that's very useful but you could technically add a scope
+    //  identifier to a hostname
+    test_resolve (resolver_opts, "ip.zeromq.org%lo0:4444", "fdf5:d058:d656::1",
+                  4444, 1);
 }
 
-void test_dns_ipv4_in_ipv6_simple ()
+void test_dns_ipv6_scope_port_brackets ()
 {
     zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr_v4;
 
     resolver_opts
-        .bindable (false)
         .allow_dns (true)
-        .allow_nic_name (false)
-        .expect_port (false)
-        .ipv6 (true);
-
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "::ffff:10.100.0.2",
-                            &expected_addr_v4) == 1);
-    //  If a host doesn't have an IPv6 then it should resolve as an embedded v4
-    //  address in an IPv6
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ipv4only.zeromq.org"));
-    validate_ipv6_addr (addr, expected_addr_v4);
-
-    TEST_ASSERT_EQUAL (-1, resolver.resolve(&addr, "invalid.zeromq.org"));
-}
-
-void test_dns_ipv4_in_ipv6_port ()
-{
-    zmq::ip_resolver_options_t resolver_opts;
-    zmq::ip_addr_t addr;
-    struct in6_addr expected_addr1, expected_addr2, expected_addr_v4;
-
-    resolver_opts
-        .bindable (false)
-        .allow_dns (true)
-        .allow_nic_name (false)
         .expect_port (true)
         .ipv6 (true);
 
-    test_ip_resolver_t resolver (resolver_opts);
-
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::1",
-                            &expected_addr1) == 1);
-    assert (test_inet_pton (AF_INET6, "fdf5:d058:d656::2",
-                            &expected_addr2) == 1);
-    assert (test_inet_pton (AF_INET6, "::ffff:10.100.0.2",
-                            &expected_addr_v4) == 1);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org:1234"));
-    validate_ipv6_addr (addr, expected_addr1, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ipv6only.zeromq.org:1234"));
-    validate_ipv6_addr (addr, expected_addr2, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org]:1234"));
-    validate_ipv6_addr (addr, expected_addr1, 1234);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "ip.zeromq.org%8:1234"));
-    validate_ipv6_addr (addr, expected_addr1, 1234, 8);
-
-    addr = test_bad_addr ();
-    TEST_ASSERT_EQUAL (0, resolver.resolve(&addr, "[ip.zeromq.org%9]:5678"));
-    validate_ipv6_addr (addr, expected_addr1, 5678, 9);
+    test_resolve (resolver_opts, "[ip.zeromq.org%lo0]:4444",
+                  "fdf5:d058:d656::1", 4444, 1);
 }
 
 int main (void)
@@ -858,30 +916,73 @@ int main (void)
     UNITY_BEGIN ();
 
     RUN_TEST (test_bind_any_ipv4);
+    RUN_TEST (test_bind_any_ipv6);
     RUN_TEST (test_nobind_any_ipv4);
+    RUN_TEST (test_nobind_any_ipv6);
+    RUN_TEST (test_nobind_any_port_ipv4);
+    RUN_TEST (test_nobind_any_port_ipv6);
+    RUN_TEST (test_nobind_addr_anyport_ipv4);
+    RUN_TEST (test_nobind_addr_anyport_ipv6);
     RUN_TEST (test_parse_ipv4_simple);
+    RUN_TEST (test_parse_ipv4_zero);
+    RUN_TEST (test_parse_ipv4_max);
+    RUN_TEST (test_parse_ipv4_brackets);
+    RUN_TEST (test_parse_ipv4_brackets_missingl);
+    RUN_TEST (test_parse_ipv4_brackets_missingr);
+    RUN_TEST (test_parse_ipv4_brackets_bad);
+    RUN_TEST (test_parse_ipv4_reject_port);
+    RUN_TEST (test_parse_ipv4_reject_any);
+    RUN_TEST (test_parse_ipv4_reject_ipv6);
     RUN_TEST (test_parse_ipv4_port);
+    RUN_TEST (test_parse_ipv4_port0);
+    RUN_TEST (test_parse_ipv4_port_garbage);
+    RUN_TEST (test_parse_ipv4_port_missing);
+    RUN_TEST (test_parse_ipv4_port_bad);
+    RUN_TEST (test_parse_ipv4_port_brackets);
+    RUN_TEST (test_parse_ipv4_port_brackets_bad);
+    RUN_TEST (test_parse_ipv4_port_brackets_bad2);
+    RUN_TEST (test_parse_ipv4_wild_brackets_bad);
+    RUN_TEST (test_parse_ipv4_port_ipv6_reject);
+    RUN_TEST (test_parse_ipv6_simple);
+    RUN_TEST (test_parse_ipv6_simple2);
+    RUN_TEST (test_parse_ipv6_zero);
+    RUN_TEST (test_parse_ipv6_max);
+    RUN_TEST (test_parse_ipv6_brackets);
+    RUN_TEST (test_parse_ipv6_brackets_missingl);
+    RUN_TEST (test_parse_ipv6_brackets_missingr);
+    RUN_TEST (test_parse_ipv6_brackets_bad);
+    RUN_TEST (test_parse_ipv6_port);
+    RUN_TEST (test_parse_ipv6_port_any);
+    RUN_TEST (test_parse_ipv6_port_nobrackets);
+    RUN_TEST (test_parse_ipv4_in_ipv6);
+    RUN_TEST (test_parse_ipv4_in_ipv6_port);
+    RUN_TEST (test_parse_ipv6_scope_int);
+    RUN_TEST (test_parse_ipv6_scope_zero);
+    RUN_TEST (test_parse_ipv6_scope_int_port);
+    RUN_TEST (test_parse_ipv6_scope_if);
+    RUN_TEST (test_parse_ipv6_scope_if_port);
+    RUN_TEST (test_parse_ipv6_scope_if_port_brackets);
+    RUN_TEST (test_parse_ipv6_scope_if_port_brackets_bad);
+    RUN_TEST (test_parse_ipv6_scope_badif);
     RUN_TEST (test_dns_ipv4_simple);
+    RUN_TEST (test_dns_ipv4_only);
+    RUN_TEST (test_dns_ipv4_invalid);
+    RUN_TEST (test_dns_ipv4_ipv6);
+    RUN_TEST (test_dns_ipv4_numeric);
     RUN_TEST (test_dns_ipv4_port);
-    RUN_TEST (test_dns_ipv4_deny);
-
-
-    if (is_ipv6_available ()) {
-        RUN_TEST (test_bind_any_ipv6);
-        RUN_TEST (test_nobind_any_ipv6);
-        RUN_TEST (test_parse_ipv6_simple);
-        RUN_TEST (test_parse_ipv6_port);
-        RUN_TEST (test_parse_ipv4_in_ipv6_simple);
-        RUN_TEST (test_parse_ipv4_in_ipv6_port);
-        RUN_TEST (test_parse_ipv6_scope_simple);
-        RUN_TEST (test_parse_ipv6_scope_port);
-        RUN_TEST (test_dns_ipv6_deny);
-        RUN_TEST (test_dns_ipv6_simple);
-        RUN_TEST (test_dns_ipv6_scope);
-        RUN_TEST (test_dns_ipv6_port);
-        RUN_TEST (test_dns_ipv4_in_ipv6_simple);
-        RUN_TEST (test_dns_ipv4_in_ipv6_port);
-    }
+    RUN_TEST (test_dns_ipv6_simple);
+    RUN_TEST (test_dns_ipv6_only);
+    RUN_TEST (test_dns_ipv6_invalid);
+    RUN_TEST (test_dns_ipv6_ipv4);
+    RUN_TEST (test_dns_ipv6_numeric);
+    RUN_TEST (test_dns_ipv6_port);
+    RUN_TEST (test_dns_brackets);
+    RUN_TEST (test_dns_brackets_bad);
+    RUN_TEST (test_dns_deny_ipv4);
+    RUN_TEST (test_dns_deny_ipv6);
+    RUN_TEST (test_dns_ipv6_scope);
+    RUN_TEST (test_dns_ipv6_scope_port);
+    RUN_TEST (test_dns_ipv6_scope_port_brackets);
 
     return UNITY_END ();
 }
