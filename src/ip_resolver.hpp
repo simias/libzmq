@@ -87,12 +87,15 @@ class ip_resolver_t
     int wchar_to_utf8 (const WCHAR *src, char **dest) const;
 #endif
 
+    //  Virtual functions that are overriden in tests
     virtual int do_getaddrinfo (const char *node_,
                                 const char *service_,
                                 const struct addrinfo *hints_,
                                 struct addrinfo **res_);
 
     virtual void do_freeaddrinfo (struct addrinfo *res_);
+
+    virtual unsigned int do_if_nametoindex (const char *ifname_);
 };
 }
 

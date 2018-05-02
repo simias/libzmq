@@ -151,17 +151,7 @@ int zmq::ip_resolver_t::resolve (ip_addr_t *ip_addr_, const char *name_)
         addr = addr.substr (0, pos);
 
         if (isalpha (if_str.at (0))) {
-#if !defined ZMQ_HAVE_WINDOWS_TARGET_XP && !defined ZMQ_HAVE_WINDOWS_UWP       \
-  && !defined ZMQ_HAVE_VXWORKS
-            zone_id = if_nametoindex (if_str.c_str ());
-#else
-            // The function 'if_nametoindex' is not supported on Windows XP.
-            // If we are targeting XP using a vxxx_xp toolset then fail.
-            // This is brutal as this code could be run on later windows clients
-            // meaning the IPv6 zone_id cannot have an interface name.
-            // This could be fixed with a runtime check.
-            zone_id = 0;
-#endif
+            zone_id = do_if_nametoindex (if_str.c_str ());
         } else {
             zone_id = (uint32_t) atoi (if_str.c_str ());
         }
@@ -650,4 +640,19 @@ int zmq::ip_resolver_t::do_getaddrinfo (const char *node_,
 void zmq::ip_resolver_t::do_freeaddrinfo (struct addrinfo *res_)
 {
     freeaddrinfo (res_);
+}
+
+unsigned int zmq::ip_resolver_t::do_if_nametoindex (const char *ifname_)
+{
+#if !defined ZMQ_HAVE_WINDOWS_TARGET_XP && !defined ZMQ_HAVE_WINDOWS_UWP       \
+  && !defined ZMQ_HAVE_VXWORKS
+    return if_nametoindex (ifname_);
+#else
+    // The function 'if_nametoindex' is not supported on Windows XP.
+    // If we are targeting XP using a vxxx_xp toolset then fail.
+    // This is brutal as this code could be run on later windows clients
+    // meaning the IPv6 zone_id cannot have an interface name.
+    // This could be fixed with a runtime check.
+    return 0;
+#endif
 }
