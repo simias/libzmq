@@ -160,6 +160,13 @@ int zmq::ip_resolver_t::resolve (ip_addr_t *ip_addr_, const char *name_)
             errno = EINVAL;
             return -1;
         }
+
+        // Now that we removed the suffix see if we should trim brackets around
+        // the address itself.
+        if (addr.size () >= 2 && addr[0] == '['
+            && addr[addr.size () - 1] == ']') {
+            addr = addr.substr (1, addr.size () - 2);
+        }
     }
 
     bool resolved = false;

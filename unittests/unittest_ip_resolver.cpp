@@ -598,6 +598,16 @@ static void test_parse_ipv6_scope_if_port_brackets ()
                   "3000:4:5::1:234", 8080, 2);
 }
 
+static void test_parse_ipv6_scope_if_port_brackets_variant ()
+{
+    zmq::ip_resolver_options_t resolver_opts;
+
+    resolver_opts.expect_port (true).ipv6 (true);
+
+    test_resolve (resolver_opts, "[3000:4:5::1:234]%eth0:8080",
+                  "3000:4:5::1:234", 8080, 2);
+}
+
 static void test_parse_ipv6_scope_badif ()
 {
     zmq::ip_resolver_options_t resolver_opts;
@@ -855,6 +865,7 @@ int main (void)
     RUN_TEST (test_parse_ipv6_scope_if);
     RUN_TEST (test_parse_ipv6_scope_if_port);
     RUN_TEST (test_parse_ipv6_scope_if_port_brackets);
+    RUN_TEST (test_parse_ipv6_scope_if_port_brackets_variant);
     RUN_TEST (test_parse_ipv6_scope_badif);
     RUN_TEST (test_dns_ipv4_simple);
     RUN_TEST (test_dns_ipv4_only);
