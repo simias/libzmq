@@ -46,7 +46,12 @@ union ip_addr_t
     int family () const;
     bool is_multicast () const;
     uint16_t port () const;
+
+    const struct sockaddr *as_sockaddr () const;
+    size_t sockaddr_len () const;
+
     void set_port (uint16_t);
+
 
     static ip_addr_t any (int family);
 };
