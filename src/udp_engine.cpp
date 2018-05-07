@@ -162,9 +162,6 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
             const ip_addr_t *mcast_addr =
               address->resolved.udp_addr->target_addr ();
 
-            int loop = 1;
-            setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
-
             if (mcast_addr->family () == AF_INET) {
                 struct ip_mreq mreq;
                 mreq.imr_multiaddr = mcast_addr->ipv4.sin_addr;
@@ -176,9 +173,9 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
                 struct ipv6_mreq mreq;
 
                 mreq.ipv6mr_multiaddr = mcast_addr->ipv6.sin6_addr;
-                mreq.ipv6mr_interface = 0; // XXX fixme?
+                mreq.ipv6mr_interface = 2; // XXX fixme?
 
-                rc = setsockopt (fd, IPPROTO_IPV6, IP_ADD_MEMBERSHIP,
+                rc = setsockopt (fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP,
                                  (char *) &mreq, sizeof (mreq));
             } else {
                 //  Shouldn't happen
@@ -190,6 +187,10 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
 #else
             errno_assert (rc == 0);
 #endif
+
+            int loop = 1;
+            setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
+
         }
         set_pollin (handle);
 
