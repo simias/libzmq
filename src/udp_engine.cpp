@@ -87,6 +87,9 @@ int zmq::udp_engine_t::init (address_t *address_, bool send_, bool recv_)
     if (fd == retired_fd)
         return -1;
 
+    int loop = 1;
+    setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
+
     unblock_socket (fd);
 
     return 0;
@@ -133,13 +136,20 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
         errno_assert (rc == 0);
 #endif
 
-        const ip_addr_t *bind_addr = address->resolved.udp_addr->bind_addr ();
+        ip_addr_t bind_addr = *address->resolved.udp_addr->bind_addr ();
+        bool multicast = address->resolved.udp_addr->is_mcast ();
+
+        if (multicast) {
+            //  In multicast we should bind ANY and use the mreq struct to
+            //  specify the interface
+            bind_addr = ip_addr_t::any (bind_addr.family ());
+        }
 
 #ifdef ZMQ_HAVE_VXWORKS
-        rc = bind (fd, (sockaddr *) bind_addr->as_sockaddr (),
-                   bind_addr->sockaddr_len ());
+        rc = bind (fd, (sockaddr *) bind_addr.as_sockaddr (),
+                   bind_addr.sockaddr_len ());
 #else
-        rc = bind (fd, bind_addr->as_sockaddr (), bind_addr->sockaddr_len ());
+        rc = bind (fd, bind_addr.as_sockaddr (), bind_addr.sockaddr_len ());
 
 #endif
 #ifdef ZMQ_HAVE_WINDOWS
@@ -148,14 +158,17 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
         errno_assert (rc == 0);
 #endif
 
-        if (address->resolved.udp_addr->is_mcast ()) {
+        if (multicast) {
             const ip_addr_t *mcast_addr =
               address->resolved.udp_addr->target_addr ();
+
+            int loop = 1;
+            setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
 
             if (mcast_addr->family () == AF_INET) {
                 struct ip_mreq mreq;
                 mreq.imr_multiaddr = mcast_addr->ipv4.sin_addr;
-                mreq.imr_interface = bind_addr->ipv4.sin_addr;
+                mreq.imr_interface = bind_addr.ipv4.sin_addr;
 
                 rc = setsockopt (fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                                  (char *) &mreq, sizeof (mreq));
