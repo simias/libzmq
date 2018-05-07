@@ -136,20 +136,25 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
         errno_assert (rc == 0);
 #endif
 
-        ip_addr_t bind_addr = *address->resolved.udp_addr->bind_addr ();
+        const ip_addr_t *bind_addr = address->resolved.udp_addr->bind_addr ();
+        const ip_addr_t any = ip_addr_t::any (bind_addr->family ());
+        const ip_addr_t *real_bind_addr;
+
         bool multicast = address->resolved.udp_addr->is_mcast ();
 
         if (multicast) {
             //  In multicast we should bind ANY and use the mreq struct to
             //  specify the interface
-            bind_addr = ip_addr_t::any (bind_addr.family ());
+            real_bind_addr = &any;
+        } else {
+            real_bind_addr = bind_addr;
         }
 
 #ifdef ZMQ_HAVE_VXWORKS
-        rc = bind (fd, (sockaddr *) bind_addr.as_sockaddr (),
-                   bind_addr.sockaddr_len ());
+        rc = bind (fd, (sockaddr *) real_bind_addr->as_sockaddr (),
+                   real_bind_addr->sockaddr_len ());
 #else
-        rc = bind (fd, bind_addr.as_sockaddr (), bind_addr.sockaddr_len ());
+        rc = bind (fd, real_bind_addr->as_sockaddr (), real_bind_addr->sockaddr_len ());
 
 #endif
 #ifdef ZMQ_HAVE_WINDOWS
@@ -165,10 +170,19 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
             if (mcast_addr->family () == AF_INET) {
                 struct ip_mreq mreq;
                 mreq.imr_multiaddr = mcast_addr->ipv4.sin_addr;
-                mreq.imr_interface = bind_addr.ipv4.sin_addr;
+                mreq.imr_interface = bind_addr->ipv4.sin_addr;
 
                 rc = setsockopt (fd, IPPROTO_IP, IP_ADD_MEMBERSHIP,
                                  (char *) &mreq, sizeof (mreq));
+
+                errno_assert (rc == 0);
+
+                int ttl = 50;
+                setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
+
+                int loop = 1;
+                setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
+
             } else if (mcast_addr->family () == AF_INET6) {
                 struct ipv6_mreq mreq;
 
@@ -177,6 +191,12 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
 
                 rc = setsockopt (fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP,
                                  (char *) &mreq, sizeof (mreq));
+
+                errno_assert (rc == 0);
+
+                int loop = 1;
+                setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
+
             } else {
                 //  Shouldn't happen
                 abort ();
@@ -188,8 +208,6 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
             errno_assert (rc == 0);
 #endif
 
-            int loop = 1;
-            setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
 
         }
         set_pollin (handle);
