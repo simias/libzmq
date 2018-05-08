@@ -211,8 +211,8 @@ void test_radio_dish_udp ()
     TEST_ASSERT_SUCCESS_ERRNO (
       zmq_setsockopt (dish, ZMQ_IPV6, &ipv6, sizeof (int)));
 
-    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://eth1;239.0.0.1:5556"));
-    TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, "udp://eth1;239.0.0.1:5556"));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://*;239.0.0.1:5555"));
+    //TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, "udp://wlan0;239.0.0.1:5556"));
 
     //TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://[ff02::1]:5556"));
     //TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, "udp://[ff02::1]:5556"));
@@ -221,7 +221,7 @@ void test_radio_dish_udp ()
 
     TEST_ASSERT_SUCCESS_ERRNO (zmq_join (dish, "TV"));
 
-    msg_send_expect_success (radio, "TV", "Friends");
+    //msg_send_expect_success (radio, "TV", "Friends");
     msg_recv_cmp (dish, "TV", "Friends");
 
     test_context_socket_close (dish);

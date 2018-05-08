@@ -87,9 +87,6 @@ int zmq::udp_engine_t::init (address_t *address_, bool send_, bool recv_)
     if (fd == retired_fd)
         return -1;
 
-    int loop = 1;
-    setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
-
     unblock_socket (fd);
 
     return 0;
@@ -137,7 +134,7 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
 #endif
 
         const ip_addr_t *bind_addr = address->resolved.udp_addr->bind_addr ();
-        const ip_addr_t any = ip_addr_t::any (bind_addr->family ());
+        ip_addr_t any = ip_addr_t::any (bind_addr->family ());
         const ip_addr_t *real_bind_addr;
 
         bool multicast = address->resolved.udp_addr->is_mcast ();
@@ -145,6 +142,8 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
         if (multicast) {
             //  In multicast we should bind ANY and use the mreq struct to
             //  specify the interface
+            any.set_port (bind_addr->port ());
+
             real_bind_addr = &any;
         } else {
             real_bind_addr = bind_addr;
@@ -176,27 +175,16 @@ void zmq::udp_engine_t::plug (io_thread_t *io_thread_, session_base_t *session_)
                                  (char *) &mreq, sizeof (mreq));
 
                 errno_assert (rc == 0);
-
-                int ttl = 50;
-                setsockopt(fd, IPPROTO_IP, IP_MULTICAST_TTL, &ttl, sizeof(ttl));
-
-                int loop = 1;
-                setsockopt(fd, IPPROTO_IP, IP_MULTICAST_LOOP, &loop, sizeof(loop));
-
             } else if (mcast_addr->family () == AF_INET6) {
                 struct ipv6_mreq mreq;
 
                 mreq.ipv6mr_multiaddr = mcast_addr->ipv6.sin6_addr;
-                mreq.ipv6mr_interface = 2; // XXX fixme?
+                mreq.ipv6mr_interface = 0; // XXX fixme?
 
                 rc = setsockopt (fd, IPPROTO_IPV6, IPV6_ADD_MEMBERSHIP,
                                  (char *) &mreq, sizeof (mreq));
 
                 errno_assert (rc == 0);
-
-                int loop = 1;
-                setsockopt(fd, IPPROTO_IPV6, IPV6_MULTICAST_LOOP, &loop, sizeof(loop));
-
             } else {
                 //  Shouldn't happen
                 abort ();
