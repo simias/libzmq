@@ -204,18 +204,18 @@ void test_radio_dish_udp ()
     void *radio = test_context_socket (ZMQ_RADIO);
     void *dish = test_context_socket (ZMQ_DISH);
 
-    int ipv6 = 0;
+    int ipv6 = 1;
 
     TEST_ASSERT_SUCCESS_ERRNO (
       zmq_setsockopt (radio, ZMQ_IPV6, &ipv6, sizeof (int)));
     TEST_ASSERT_SUCCESS_ERRNO (
       zmq_setsockopt (dish, ZMQ_IPV6, &ipv6, sizeof (int)));
 
-    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://*;239.0.0.1:5555"));
+    //TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://*;239.0.0.1:5555"));
     //TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, "udp://wlan0;239.0.0.1:5556"));
 
-    //TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://[ff02::1]:5556"));
-    //TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, "udp://[ff02::1]:5556"));
+    TEST_ASSERT_SUCCESS_ERRNO (zmq_bind (dish, "udp://[ff02::42]:5555"));
+    //TEST_ASSERT_SUCCESS_ERRNO (zmq_connect (radio, "udp://[ff02::1]:5555"));
 
     msleep (SETTLE_TIME);
 
