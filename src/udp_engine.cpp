@@ -392,14 +392,14 @@ void zmq::udp_engine_t::out_event ()
 #ifdef ZMQ_HAVE_WINDOWS
         rc = sendto (fd, (const char *) out_buffer, (int) size, 0, out_address,
                      (int) out_addrlen);
-        wsa_assert (rc != SOCKET_ERROR);
+        //wsa_assert (rc != SOCKET_ERROR);
 #elif defined ZMQ_HAVE_VXWORKS
         rc = sendto (fd, (caddr_t) out_buffer, size, 0,
                      (sockaddr *) out_address, (int) out_addrlen);
-        errno_assert (rc != -1);
+        //errno_assert (rc != -1);
 #else
         rc = sendto (fd, out_buffer, size, 0, out_address, out_addrlen);
-        errno_assert (rc != -1);
+        //errno_assert (rc != -1);
 #endif
     } else
         reset_pollout (handle);
